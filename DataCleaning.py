@@ -57,3 +57,17 @@ print(outputData.head())
 
 outputData.to_csv('ADMISSIONS_PRIMARY_SECONDARY.csv')
 
+diag = outputData.set_index(['SUBJECT_ID', 'EXPIRE_FLAG', 'HADM_ID', 'PRIMARY_DIAGNOSIS'])['SECONDARY_DIAGNOSES']\
+            .str.split(',', expand=True)\
+            .stack()\
+            .reset_index(name='SECONDARY_DIAGNOSIS')\
+            .drop('level_4', axis=1)
+
+# merge the original dataframe with the resulting dataframe to get the final output
+diagData = outputData.merge(diag, on=['SUBJECT_ID', 'EXPIRE_FLAG', 'HADM_ID', 'PRIMARY_DIAGNOSIS'])
+diagData = diagData.drop('SECONDARY_DIAGNOSES', axis=1)
+diagData['SECONDARY_DIAGNOSIS'] = diagData['SECONDARY_DIAGNOSIS'].astype(int)
+diagData.drop_duplicates()
+# print the resulting dataframe
+print(diagData.head())
+diagData.to_csv('DATA.csv')
