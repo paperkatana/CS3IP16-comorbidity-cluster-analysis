@@ -15,6 +15,8 @@ from pyclustering.cluster.clarans import clarans
 from pyclustering.utils import read_sample
 from pyclustering.samples.definitions import FCPS_SAMPLES
 from sklearn.neighbors import NearestNeighbors
+from comorbidipy import comorbidity
+from math import sqrt
 
 print("all packages imported")
 #---------------------------------------------------------------------------------------------
@@ -35,6 +37,13 @@ diagnoses['ICD9_CODE'] = diagnoses['ICD9_CODE'].astype(str)
 diagnoses = diagnoses[diagnoses['ICD9_CODE'].apply(lambda x: re.match(r'^\d+$', x) is not None)]
 #print(len(diagnoses.index))
 #print(diagnoses.head())
+
+#removing ICD9 codes 290-319, 630-679, 740-799
+diagnoses['ICD9_CODE'] = diagnoses['ICD9_CODE'].astype(int)
+diagnoses = diagnoses[~diagnoses['ICD9_CODE'].between(290, 319)]    #mental disorders
+diagnoses = diagnoses[~diagnoses['ICD9_CODE'].between(630, 679)]    #complications in pregnancy
+diagnoses = diagnoses[~diagnoses['ICD9_CODE'].between(740, 999)]    #congenital abnormalities, perinatal conditions, symptoms, signs, ill-defined conditions, injury and poisoning
+diagnoses['ICD9_CODE'] = diagnoses['ICD9_CODE'].astype(str)
 
 # filter out admission_ids without a primary diagnosis
 diagnoses = diagnoses.groupby('HADM_ID').filter(lambda x: (x['SEQ_NUM'] == 1.0).any())
@@ -92,12 +101,26 @@ diagData = diagData.drop('SECONDARY_DIAGNOSES', axis=1)
 diagData['SECONDARY_DIAGNOSIS'] = diagData['SECONDARY_DIAGNOSIS'].astype(int)
 diagData.drop_duplicates()
 # print the resulting dataframe
-#print(diagData.head())
+print(diagData.shape)
 diagData.to_csv('./data/DATA.csv')
+
+def appendPrimaryDiagnosis(row):
+    primDiag = str(row['PRIMARY_DIAGNOSIS'])
+    secDiag = row['SECONDARY_DIAGNOSES']
+    return secDiag + ',' + primDiag
+
+cciData = outputData.copy()
+
+cciData['DIAGNOSES'] = cciData.apply(appendPrimaryDiagnosis, axis=1)
+print(cciData.head())
+cciData.to_csv('./data/CCIDATA.csv')
 
 #---------------------------------------------------------------------------------------------
 #Cluster analysis preparation
 
+#cci = comorbidity(cciData, id='SUBJECT_ID', code='DIAGNOSES', age=None, score='charlson', icd='icd9', variant='quan', weighting='quan', assign0=True)
+#print(cci.head())
+#cci.to_csv('./data/CCI.csv')
 
 # create a feature matrix with primary and secondary diagnoses as features
 X = diagData[['PRIMARY_DIAGNOSIS', 'SECONDARY_DIAGNOSIS']].to_numpy()
@@ -129,411 +152,56 @@ print("tsne object fit to xpca data")
 
 #K = [4]
 K = [10, 40, 80, 100, 150, 200, 250, 300, 400, 500, 600]
-batchSize = [50, 100, 200, 500, 1000]
+batchSize = [100, 500, 1000, 5000]
 print("values of k set")
 
 #create a custom colormap for up to 600 unique colours
 cmap = ListedColormap(np.random.rand(600,3))
+colours = ['green', 'red']
+cmap2 = ListedColormap(colours)
 
 mask0 = diagData['EXPIRE_FLAG'] == 0
 mask1 = diagData['EXPIRE_FLAG'] == 1
     
 X0 = X[mask0]
 X1 = X[mask1]
-#---------------------------------------------------------------------------------------------
+
 """
-#K-Means
+labels = ['Discharged', 'Deceased']
+plt.scatter(X[:, 0], X[:, 1], c=X[:, 2], s=10, cmap=cmap2)
+plt.xlabel('Primary diagnosis')
+plt.ylabel('Secondary diagnosis')
+plt.title('Discharged vs deceased patients')
+legend = plt.legend(handles=[plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=color, label=label) for color, label in zip(colours, labels)], title='Patient Outcome', loc='upper left', bbox_to_anchor=(1, 1))
 
-silhouetteScores1 = []
-print("silhouette score list initialised")
-chScores1 = []
-print("calinski harabasz index list initialised")
-dbiScores1 = []
-print("davies-bouldin index list initialised")
-sseScores1 = []
-print("sse score list initialised")
-
-for k in K:
-    print(f'k = {k}')
-
-    # perform K-means clustering
-    kmeans = KMeans(n_clusters=k, n_init=10, random_state=0).fit(XPCA)
-    print("kmeans fit to k")
-
-    
-    #silhouette score
-    #aiming for as close to 1.0 as possible
-    #silhouette = silhouette_score(X, kmeans.labels_)
-    #silhouetteScores1.append(silhouette)
-    #print("The average silhouette_score is :", silhouette)
-    
-
-    #calinski-harabasz index (also known as the Variance Ratio Criterion)
-    #aiming for a higher value
-    chIndex = calinski_harabasz_score(XPCA, kmeans.labels_)
-    chScores1.append(chIndex)
-    print('Calinski-Harabasz Index:', chIndex)
-    print(chScores1)
-
-    #davies-bouldin index 
-    #aiming for a lower value
-    dbiIndex = davies_bouldin_score(XPCA, kmeans.labels_)
-    dbiScores1.append(dbiIndex)
-    print('Davies-Bouldin Index:', dbiIndex)
-    print(dbiScores1)
-
-    #sse
-    #aiming for a lower value
-    #The inertia_ attribute returns the sum of squared distances of all data points to their closest centroid
-    sse = kmeans.inertia_
-    sseScores1.append(sse)
-    print('SSE:', sse)
-    print(sseScores1)
-    
-    labels0 = kmeans.labels_[mask0]
-    labels1 = kmeans.labels_[mask1]
-
-    fig, ax = plt.subplots(ncols=2, figsize=(20,10))
-
-    ax[0].scatter(X0[:, 0], X0[:, 1], c=labels0, marker='o', s=10, cmap=cmap)
-    ax[0].scatter(X1[:, 0], X1[:, 1], c=labels1, marker='x', s=10, cmap=cmap)
-    ax[1].scatter(X[:, 0], X[:, 1], c=X[:, 2], s=10, cmap=cmap)
-
-    ax[0].set_xlabel('Primary diagnosis')
-    ax[0].set_ylabel('Secondary diagnosis')
-    ax[0].set_title(str(k) + ' Clusters (k-Means)')
-    ax[1].set_xlabel('Primary diagnosis')
-    ax[1].set_ylabel('Secondary diagnosis')
-    ax[1].set_title('Discharged vs deceased patients')
-
-    filename = './kmeans/kmeans_' + str(k) + '_clusters.png'
-    plt.savefig(filename)
-    #plt.show()
-
-fig, ax = plt.subplots(nrows=3, figsize=(5,15))
-
-ax[0].plot(K, chScores1)
-ax[1].plot(K, dbiScores1)
-ax[2].plot(K, sseScores1)
-
-ax[0].set_xlabel('Number of clusters')
-ax[0].set_ylabel('Calinki-Harabasz Index')
-ax[0].set_title('Calinski-Harabasz Scores')
-ax[1].set_xlabel('Number of clusters')
-ax[1].set_ylabel('Davies-Bouldin Index')
-ax[1].set_title('Davies-Bouldin Scores')
-ax[2].set_xlabel('Number of clusters')
-ax[2].set_ylabel('Sum of Squared Error Score')
-ax[2].set_title('SSE Scores')
-
-plt.tight_layout()
-
-filename = './kmeans/kmeans_clusters_metrics.png'
-plt.savefig(filename)
+filename = 'diseased_vs_discharged.png'
+plt.savefig(filename, bbox_inches='tight')
 #plt.show()
- 
-#---------------------------------------------------------------------------------------------
-
-#mini batch kmeans
-
-silhouetteScores2 = []
-print("silhouette score list initialised")
-chScores2 = []
-print("calinski harabasz index list initialised")
-dbiScores2 = []
-print("davies-bouldin index list initialised")
-sseScores2 = []
-print("sse score list initialised")
-
-for k in K:
-    for b in batchSize:
-        print(f'k = {k}. batch size = {b}')
-
-        chScoresTemp = []
-        dbiScoresTemp = []
-        sseScoresTemp = []
-
-        # perform clustering
-        mbk = MiniBatchKMeans(n_clusters=k, n_init=3, batch_size=b, random_state=0)
-        mbk.fit(XPCA)
-        #what does different batch size do?
-
-        #silhouette score
-        #aiming for as close to 1.0 as possible
-        #silhouette = silhouette_score(XPCA, clusterLabels)
-        #silhouetteScores2.append(silhouette)
-        #print("The average silhouette_score is :", silhouette)
-
-        #calinski-harabasz index (also known as the Variance Ratio Criterion)
-        #aiming for a higher value
-        chIndex = calinski_harabasz_score(XPCA, mbk.labels_)
-        chScoresTemp.append(chIndex)
-        chScores2.append(chIndex)
-        print('Calinski-Harabasz Index:', chIndex)
-
-        #davies-bouldin index 
-        #aiming for a lower value
-        dbiIndex = davies_bouldin_score(XPCA, mbk.labels_)
-        dbiScoresTemp.append(bbiIndex)
-        dbiScores2.append(dbiIndex)
-        print('Davies-Bouldin Index:', dbiIndex)
-
-        #sse
-        #aiming for a lower value
-        #The inertia_ attribute returns the sum of squared distances of all data points to their closest centroid
-        sse = mbk.inertia_
-        sseScoresTemp.append(sse)
-        sseScores2.append(sse)
-        print('SSE:', sse)
-
-        labels0 = mbk.labels_[mask0]
-        labels1 = mbk.labels_[mask1]
-
-        fig, ax = plt.subplots(ncols=2, figsize=(20,10))
-
-        ax[0].scatter(X0[:, 0], X0[:, 1], c=labels0, marker='o', s=10, cmap=cmap)
-        ax[0].scatter(X1[:, 0], X1[:, 1], c=labels1, marker='x', s=10, cmap=cmap)
-        ax[1].scatter(X[:, 0], X[:, 1], c=X[:, 2], s=10, cmap=cmap)
-
-        ax[0].set_xlabel('Primary diagnosis')
-        ax[0].set_ylabel('Secondary diagnosis')
-        ax[0].set_title(str(k) + ' Clusters (Mini Batch k-Means, batch size ' + str(b) + ')')
-        ax[1].set_xlabel('Primary diagnosis')
-        ax[1].set_ylabel('Secondary diagnosis')
-        ax[1].set_title('Discharged vs deceased patients')
-
-        filename = './mbk/mbk_' + str(k) + '_clusters_' + str(b) + 'batchsize.png'
-        plt.savefig(filename)
-        #plt.show()
-
-    fig, ax = plt.subplots(ncols=3, figsize=(25,15))
-
-    ax[0].plot(K, chScoresTemp)
-    ax[1].plot(K, dbiscoresTemp)
-    ax[2].plot(K, sseScoresTemp)
-
-    ax[0].set_xlabel('Number of clusters')
-    ax[0].set_ylabel('Calinki-Harabasz Index')
-    ax[0].set_title('Calinski-Harabasz Scores')
-    ax[1].set_xlabel('Number of clusters')
-    ax[1].set_ylabel('Davies-Bouldin Index')
-    ax[1].set_title('Davies-Bouldin Scores')
-    ax[2].set_xlabel('Number of clusters')
-    ax[2].set_ylabel('Sum of Squared Error Score')
-    ax[2].set_title('SSE Scores')
-
-    filename = './mbk/mbk_' + str(k) + '_clusters_metrics.png'
-    plt.savefig(filename)
-    #plt.show()
-"""  
-#---------------------------------------------------------------------------------------------
-"""
-#agglomerative
-
-silhouetteScores2 = []
-print("silhouette score list initialised")
-chScores2 = []
-print("calinski harabasz index list initialised")
-dbiScores2 = []
-print("davies-bouldin index list initialised")
-sseScores2 = []
-print("sse score list initialised")
-
-for k in K:
-    print(f'k = {k}')
-    
-    nn = NearestNeighbors(n_neighbors=10) #vary n_neighbors?
-    nn.fit(XPCA)
-    distances, indices = nn.kneighbors(XPCA)
-    eps = np.mean(distances[:, 1:])
-    minSamples = int(0.05 * XPCA.shape[0]) #vary 0.05?
-    #epsRange = np.linspace(0.5 * avgDist, 1.5 * avgDist, num=10)
-    #minSamplesRange = np.linspace(0.02 * XPCA.shape[0], 0.1 * XPCA.shape[0], num=10)
-
-    # perform K-means clustering
-    model = DBSCAN(eps=eps, min_samples=minSamples)
-    model.fit(XPCA)
-    print("dbscan fit to k")
-
-    #silhouette score
-    #aiming for as close to 1.0 as possible
-    #silhouette = silhouette_score(XPCA, clusterLabels)
-    #silhouetteScores2.append(silhouette)
-    #print("The average silhouette_score is :", silhouette)
-
-    #calinski-harabasz index (also known as the Variance Ratio Criterion)
-    #aiming for a higher value
-    chIndex = calinski_harabasz_score(XPCA, model.labels_)
-    chScores2.append(chIndex)
-    print('Calinski-Harabasz Index:', chIndex)
-
-    #davies-bouldin index 
-    #aiming for a lower value
-    dbiIndex = davies_bouldin_score(XPCA, model.labels_)
-    dbiScores2.append(dbiIndex)
-    print('Davies-Bouldin Index:', dbiIndex)
-
-    #sse
-    #aiming for a lower value
-    #The inertia_ attribute returns the sum of squared distances of all data points to their closest centroid
-    centers = np.array([XPCA[labels == i].mean(axis=0) for i in range(k)])
-    distances = np.array([np.linalg.norm(XPCA[labels == i] - centers[i], axis=1) for i in range(k)])
-    sse = np.sum(distances ** 2)
-    sseScores2.append(sse)
-    print('SSE:', sse)
-
-    labels0 = model.labels_[mask0]
-    labels1 = model.labels_[mask1]
-
-    fig, ax = plt.subplots(ncols=2, figsize=(20,10))
-
-    ax[0].scatter(X0[:, 0], X0[:, 1], c=labels0, marker='o', s=10, cmap=cmap)
-    ax[0].scatter(X1[:, 0], X1[:, 1], c=labels1, marker='x', s=10, cmap=cmap)
-    ax[1].scatter(X[:, 0], X[:, 1], c=X[:, 2], s=10, cmap=cmap)
-
-    ax[0].set_xlabel('Primary diagnosis')
-    ax[0].set_ylabel('Secondary diagnosis')
-    ax[0].set_title(str(k) + ' Clusters (DBSCAN)')
-    ax[1].set_xlabel('Primary diagnosis')
-    ax[1].set_ylabel('Secondary diagnosis')
-    ax[1].set_title('Discharged vs deceased patients')
-
-    filename = './dbscan/dbscan_' + str(k) + '_clusters.png'
-    plt.savefig(filename)
-    plt.show()
-
-fig, ax = plt.subplots(ncols=3, figsize=(25,15))
-
-ax[0].plot(K, chScores2)
-ax[1].plot(K, dbiscores2)
-ax[2].plot(K, sseScores2)
-
-ax[0].set_xlabel('Number of clusters')
-ax[0].set_ylabel('Calinki-Harabasz Index')
-ax[0].set_title('Calinski-Harabasz Scores')
-ax[1].set_xlabel('Number of clusters')
-ax[1].set_ylabel('Davies-Bouldin Index')
-ax[1].set_title('Davies-Bouldin Scores')
-ax[2].set_xlabel('Number of clusters')
-ax[2].set_ylabel('Sum of Squared Error Score')
-ax[2].set_title('SSE Scores')
-
-filename = './dbscan/dbscan_clusters_metrics.png'
-plt.savefig(filename)
-plt.show()
-
-"""
-
-
-#---------------------------------------------------------------------------------------------
-"""
-#CLARA
-
-silhouetteScores3 = []
-print("silhouette score list initialised")
-chScores3 = []
-print("calinski harabasz index list initialised")
-dbiScores3 = []
-print("davies-bouldin index list initialised")
-sseScores3 = []
-print("sse score list initialised")
-
-maxNeighbours = [2,5,8,10,12]
-numLocal = [3,4,5]
-
-for k in K:
-    for n in maxNeighbours:
-        print(f'k = {k}. maxNeighbours = {n}')
-
-        chScoresTemp = []
-        sseScoresTemp = []
-
-        # perform clustering
-        clara = clarans(XPCA, k, n, 3)
-        print("CLARA created")
-        clara.process()
-        print("CLARA processed")
-        clusters = clara.get_clusters()
-        medoids = clara.get_medoids()
-
-        #silhouette score
-        #aiming for as close to 1.0 as possible
-        #silhouette = silhouette_score(XPCA, clusterLabels)
-        #silhouetteScores2.append(silhouette)
-        #print("The average silhouette_score is :", silhouette)
-
-        #calinski-harabasz index (also known as the Variance Ratio Criterion)
-        #aiming for a higher value
-        chIndex = calinski_harabasz_score(XPCA, clusters)
-        chScoresTemp.append(chIndex)
-        chScores3.append(chIndex)
-        print('Calinski-Harabasz Index:', chIndex)
-
-        #davies-bouldin index 
-        #aiming for a lower value
-        dbiIndex = davies_bouldin_score(XPCA, clusters)
-        dbiScores1.append(dbiIndex)
-        print('Davies-Bouldin Index:', dbiIndex)
-
-        #sse
-        #aiming for a lower value
-        #The inertia_ attribute returns the sum of squared distances of all data points to their closest centroid
-        distances = cdist(XPCA, medoids, 'euclidean')
-        sse = np.min(distances, axis=1).sum()
-        sseScoresTemp.append(sse)
-        sseScores3.append(sse)
-        print('SSE:', sse)
-
-        labels0 = clusters[mask0]
-        labels1 = clusters[mask1]
-
-        fig, ax = plt.subplots(ncols=2, figsize=(20,10))
-
-        ax[0].scatter(X0[:, 0], X0[:, 1], c=labels0, marker='o', s=10, cmap=cmap)
-        ax[0].scatter(X1[:, 0], X1[:, 1], c=labels1, marker='x', s=10, cmap=cmap)
-        ax[1].scatter(X[:, 0], X[:, 1], c=X[:, 2], s=10, cmap=cmap)
-
-        ax[0].set_xlabel('Primary diagnosis')
-        ax[0].set_ylabel('Secondary diagnosis')
-        ax[0].set_title(str(k) + ' Clusters (CLARA, maxNeighbor=' + str(n) + ')')
-        ax[1].set_xlabel('Primary diagnosis')
-        ax[1].set_ylabel('Secondary diagnosis')
-        ax[1].set_title('Discharged vs deceased patients')
-
-        filename = './clara/clara_' + str(k) + '_clusters_' + str(n) + 'maxneighbor.png'
-        plt.savefig(filename)
-        #plt.show()
-
-    fig, ax = plt.subplots(ncols=3, figsize=(25,15))
-
-    ax[0].plot(K, chScores3)
-    ax[1].plot(K, dbiscores3)
-    ax[2].plot(K, sseScores3)
-
-    ax[0].set_xlabel('Number of clusters')
-    ax[0].set_ylabel('Calinki-Harabasz Index')
-    ax[0].set_title('Calinski-Harabasz Scores')
-    ax[1].set_xlabel('Number of clusters')
-    ax[1].set_ylabel('Davies-Bouldin Index')
-    ax[1].set_title('Davies-Bouldin Scores')
-    ax[2].set_xlabel('Number of clusters')
-    ax[2].set_ylabel('Sum of Squared Error Score')
-    ax[2].set_title('SSE Scores')
-
-    filename = './kmeans/kmeans_' + str(k) + '_clusters_metrics.png'
-    plt.savefig(filename)
-    #plt.show()
-
-plt.show()
 """
 #---------------------------------------------------------------------------------------------
 
-#K-Algorithm
+#creating metric calculation functions
+
+#use this as a metric on whether the clusters demonstrate good comorbidity in the report
+def calcCCI(pLabels):
+    if 'CLUSTER_ID' in cciData.columns:
+        cciData.drop('CLUSTER_ID', axis=1, inplace=True)
+
+    # Create a dictionary to map patient IDs to cluster assignments
+    idToCluster = dict(zip(cciData['SUBJECT_ID'], pLabels))
+        
+    # Create a new column in diagData to represent the cluster assignment for each patient
+    cciData['CLUSTER_ID'] = cciData['SUBJECT_ID'].map(idToCluster)
+
+    # Calculate the CCI for each cluster
+    clusterCCI = cciData.groupby('CLUSTER_ID').apply(lambda x: comorbidity(x, id='SUBJECT_ID', code='DIAGNOSES', age=None, score='charlson', icd='icd9', variant='quan', weighting='quan', assign0=True)['comorbidity_score'].sum())
+    #print(clusterCCI)
+    return clusterCCI
 
 def RelativeRisk(codeA, codeB, eventFlag):
     #print("Beginning RelativeRisk(codeA, codeB)")
     #print(f'Primary diagnosis: {codeA}. Secondary diagnosis: {codeB}.')
-    countTotal = primCount.sum() + secCount.sum()
+    #countTotal = primCount.sum() + secCount.sum()
     #print(f'Count total: {countTotal}. primCount={primCount.sum()} and secCount={secCount.sum()}')
     countA = primCount.loc[codeA] if codeA in primCount.index else 0
     #print(f'Count of primary diagnosis {codeA}: {countA}')
@@ -541,7 +209,8 @@ def RelativeRisk(codeA, codeB, eventFlag):
     #print(f'Count of secondary diagnosis {codeB}: {countB}')
     countAB = countA + countB
     #print(f'count A + count B = {countAB}')
-    relativeRisk = (countAB / countTotal) / ((countA / countTotal)*(countB / countTotal))
+    #relativeRisk = (countAB / countTotal) / ((countA / countTotal)*(countB / countTotal))
+    relativeRisk = (countAB * sqrt(2)) / sqrt(countA**2 + countB**2)
     if eventFlag == 1:
         relativeRisk *= 2
     #print(f'Relative risk: {relativeRisk}')
@@ -565,111 +234,203 @@ def ClusterRRTotal(pClusterSet, pClusterIndex):
         eventFlag = X[indices[i], 2]
         relativeRisk = RelativeRisk(primDiag, secDiag, eventFlag)
         clusterTotal += relativeRisk
+
+    #clusterCCI = calcCCI(pClusterSet.labels_)
+    #clusterIndexCCI = clusterCCI[pClusterIndex] #this is the cluster's CCI 
+    
     #print("Looped through all possible pairs of data points in the cluster and calculated relative risk")
     #print(f'Final cluster total for cluster {pClusterIndex}: {clusterTotal}')
     #print("Ending ClusterRRTotal(clusterIndex)")
     return clusterTotal
 
-def KAlgorithm(pClusterSet, k):
-    labels = pClusterSet.labels_
-    indices = np.arange(len(XPCA))
-    np.random.shuffle(indices)
-    changeMade = False
-    threshold = 0
-    
-    while True:
-        #process every data point in a random order
-        for i in indices:
-            oldCluster = pClusterSet.predict(XPCA[i].reshape(1,-1))[0]
-            newCluster = oldCluster
-            bestDelta = 0
-            updatedKMeans = pClusterSet
-
-            #loop all clusters
-            for cluster in range(k):
-                #calculate this cluster's current rr total
-                currentRR = ClusterRRTotal(pClusterSet, cluster)
-                print(f'CurrentRR: {currentRR}')
-                #calculate the new rr total if i moved to this cluster
-                tempLabels = pClusterSet.labels_.copy()
-                tempLabels[i] = cluster
-                indicesOld = np.where(tempLabels == oldCluster)[0]
-                indicesNew = np.where(tempLabels == cluster)[0]
-
-                clusterOldUpdated = KMeans(n_clusters=1, n_init=10, random_state=0).fit(XPCA[indicesOld])
-                tempClusterSet = np.concatenate((pClusterSet.cluster_centers_, clusterOldUpdated.cluster_centers_), axis=0)
-                tempKMeans1 = KMeans(n_clusters=k, n_init=10, random_state=0)
-                tempKMeans1.cluster_centers_ = tempClusterSet
-
-                clusterNewUpdated = KMeans(n_clusters=1, n_init=10, random_state=0).fit(XPCA[indicesNew])
-                tempClusterSet = np.concatenate((tempKMeans1.cluster_centers_, clusterNewUpdated.cluster_centers_), axis=0)
-                newKMeans2 = KMeans(n_clusters=k, n_init=10, random_state=0)
-                newKMeans2.cluster_centers_ = tempClusterSet
-                newKMeans2.labels_ = tempLabels
-
-                newRR = ClusterRRTotal(newKMeans2, cluster)
-                print(f'newRR: {newRR}')
-                delta = newRR - currentRR
-                
-                if delta > bestDelta:
-                    print(f'Delta {delta} > bestDelta {bestDelta}')
-                    bestDelta = delta
-                    newCluster = cluster
-                    updatedKMeans = newKMeans2
-                else:
-                    print(f'Delta {delta} < bestDelta {bestDelta}')
-
-            if bestDelta > threshold:
-                print(f'Best Delta: {bestDelta}. Greater than {threshold}')
-                #move the actual datapoint
-                pClusterSet = updatedKMeans
-                changeMade = True
-
-        if changeMade == False:
-            break
-
-
+#---------------------------------------------------------------------------------------------
 """
-clusterSet = KMeans(n_clusters=1, n_init=10, random_state=0).fit(XPCA)
-print("Cluster set initialised with one cluster")
+#K-Means
+   
+    #totalCCI = cluster_cci.sum()
+    #print(f'Total CCI for this cluster set: {totalCCI}')
+    #return totalCCI
 
-silhouetteScores4 = []
-print("silhouette score list initialised")
-chScores4 = []
-print("calinski harabasz index list initialised")
-dbiScores4 = []
-print("davies-bouldin index list initialised")
-sseScores4 = []
-print("sse score list initialised")
+chScores1 = []
+dbiScores1 = []
+sseScores1 = []
+cciScores1 = []
+rrScores1 = []
 
 for k in K:
-    clusterSet = KMeans(n_clusters=k, n_init=10, random_state=0).fit(XPCA)
-    print(f'Cluster set for k={k} created')
-    KAlgorithm(clusterSet, k)
-    print("K Algorithm successfully performed")
+    print(f'k = {k}')
 
-    #silhouette = silhouette_score(XPCA, clusterSet.labels_)
-    #print(f'Silhouette Average: {silhouette}')
-    chIndex = calinski_harabasz_score(XPCA, clusterSet.labels_)
-    print(f'Calinski Harabasz Score: {chIndex}')
-    dbiIndex = davies_bouldin_score(XPCA, clusterSet.labels_)
+    # perform K-means clustering
+    kmeans = KMeans(n_clusters=k, n_init=10, random_state=0).fit(XPCA)
+    print("kmeans fit to k")
+
+    #calinski-harabasz index (also known as the Variance Ratio Criterion)
+    #aiming for a higher value
+    chIndex = calinski_harabasz_score(XPCA, kmeans.labels_)
+    chScores1.append(chIndex)
+    print('Calinski-Harabasz Index:', chIndex)
+
+    #davies-bouldin index 
+    #aiming for a lower value
+    dbiIndex = davies_bouldin_score(XPCA, kmeans.labels_)
+    dbiScores1.append(dbiIndex)
     print('Davies-Bouldin Index:', dbiIndex)
-    sse = clusterSet.inertia_
-    print(f'SSE Score: {sse}')
+
+    #sse
+    #aiming for a lower value
+    #The inertia_ attribute returns the sum of squared distances of all data points to their closest centroid
+    sse = kmeans.inertia_
+    sseScores1.append(sse)
+    print('SSE:', sse)
+
+    cci = calcCCI(kmeans.labels_)
+    cciScores1.append(cci)
+    #print(cci)
+
+    rr = 0
+    for cluster in range(k):
+        rr += ClusterRRTotal(kmeans, cluster)
+    rrScores1.append(rr)
+    print(rr)
     
-    labels0 = clusterSet.labels_[mask0]
-    labels1 = clusterSet.labels_[mask1]
+    labels0 = kmeans.labels_[mask0]
+    labels1 = kmeans.labels_[mask1]
 
     plt.scatter(X0[:, 0], X0[:, 1], c=labels0, marker='o', s=10, cmap=cmap)
     plt.scatter(X1[:, 0], X1[:, 1], c=labels1, marker='x', s=10, cmap=cmap)
 
     plt.xlabel('Primary diagnosis')
     plt.ylabel('Secondary diagnosis')
-    plt.title(str(k) + ' Clusters (K-Algorithm)')
+    plt.title(str(k) + ' Clusters (k-Means)')
 
-    filename = './kalg/k_algorithm_' + str(k) + '_clusters.png'
-    plt.savefig(filename)
+    filename = './kmeans/kmeans_' + str(k) + '_clusters.png'
+    plt.savefig(filename, bbox_inches='tight')
+    #plt.show()
+
+fig, ax = plt.subplots(nrows=2, ncols=2, figsize=(10,10))
+
+ax[0,0].plot(K, chScores1)
+ax[0,1].plot(K, dbiScores1)
+ax[1,0].plot(K, sseScores1)
+ax[1,1].plot(K, rrScores1)
+
+ax[0,0].set_xlabel('Number of clusters')
+ax[0,0].set_ylabel('Calinki-Harabasz Index')
+ax[0,0].set_title('Calinski-Harabasz Scores')
+ax[0,1].set_xlabel('Number of clusters')
+ax[0,1].set_ylabel('Davies-Bouldin Index')
+ax[0,1].set_title('Davies-Bouldin Scores')
+ax[1,0].set_xlabel('Number of clusters')
+ax[1,0].set_ylabel('Sum of Squared Error Score')
+ax[1,0].set_title('SSE Scores')
+ax[1,1].set_xlabel('Number of clusters')
+ax[1,1].set_ylabel('Relative Risk Score')
+ax[1,1].set_title('Relative Risk')
+
+plt.tight_layout()
+
+filename = './kmeans/kmeans_clusters_metrics.png'
+plt.savefig(filename, bbox_inches='tight')
+#plt.show()
+
+#---------------------------------------------------------------------------------------------
+
+#mini batch kmeans
+
+chScores2 = []
+print("calinski harabasz index list initialised")
+dbiScores2 = []
+print("davies-bouldin index list initialised")
+sseScores2 = []
+print("sse score list initialised")
+cciScores2 = []
+rrScores2 = []
+
+for b in batchSize:
+    chScoresTemp = []
+    dbiScoresTemp = []
+    sseScoresTemp = []
+    cciScoresTemp = []
+    rrScoresTemp = []
+    for k in K:
+        print(f'k = {k}. batch size = {b}')
+
+        # perform clustering
+        mbk = MiniBatchKMeans(n_clusters=k, n_init=3, batch_size=b, random_state=0)
+        mbk.fit(XPCA)
+
+        #calinski-harabasz index (also known as the Variance Ratio Criterion)
+        #aiming for a higher value
+        chIndex = calinski_harabasz_score(XPCA, mbk.labels_)
+        chScoresTemp.append(chIndex)
+        chScores2.append(chIndex)
+        print('Calinski-Harabasz Index:', chIndex)
+
+        #davies-bouldin index 
+        #aiming for a lower value
+        dbiIndex = davies_bouldin_score(XPCA, mbk.labels_)
+        dbiScoresTemp.append(dbiIndex)
+        dbiScores2.append(dbiIndex)
+        print('Davies-Bouldin Index:', dbiIndex)
+
+        #sse
+        #aiming for a lower value
+        #The inertia_ attribute returns the sum of squared distances of all data points to their closest centroid
+        sse = mbk.inertia_
+        sseScoresTemp.append(sse)
+        sseScores2.append(sse)
+        print('SSE:', sse)
+
+        #cci = calcCCI(mbk.labels_)
+        #cciScores2.append(cci)
+        #print(cci)
+
+        rr = 0
+        for cluster in range(k):
+            rr += ClusterRRTotal(mbk, cluster)
+        rrScoresTemp.append(rr)
+        print(rr)
+
+        labels0 = mbk.labels_[mask0]
+        labels1 = mbk.labels_[mask1]
+
+        plt.scatter(X0[:, 0], X0[:, 1], c=labels0, marker='o', s=10, cmap=cmap)
+        plt.scatter(X1[:, 0], X1[:, 1], c=labels1, marker='x', s=10, cmap=cmap)
+
+        plt.xlabel('Primary diagnosis')
+        plt.ylabel('Secondary diagnosis')
+        plt.title(str(k) + ' Clusters (Mini Batch k-Means, batch size ' + str(b) + ')')
+
+        filename = './mbk/mbk_' + str(k) + '_clusters_' + str(b) + 'batchsize.png'
+        plt.savefig(filename, bbox_inches='tight')
+        #plt.show()
+
+    fig, ax = plt.subplots(nrows=2, ncols=2, figsize=(10,10))
+
+    ax[0,0].plot(K, chScoresTemp)
+    ax[0,1].plot(K, dbiScoresTemp)
+    ax[1,0].plot(K, sseScoresTemp)
+    ax[1,1].plot(K, rrScoresTemp)
+
+    ax[0,0].set_xlabel('Number of clusters')
+    ax[0,0].set_ylabel('Calinki-Harabasz Index')
+    ax[0,0].set_title('Calinski-Harabasz Scores')
+    ax[0,1].set_xlabel('Number of clusters')
+    ax[0,1].set_ylabel('Davies-Bouldin Index')
+    ax[0,1].set_title('Davies-Bouldin Scores')
+    ax[1,0].set_xlabel('Number of clusters')
+    ax[1,0].set_ylabel('Sum of Squared Error Score')
+    ax[1,0].set_title('SSE Scores')
+    ax[1,1].set_xlabel('Number of clusters')
+    ax[1,1].set_ylabel('Relative Risk Score')
+    ax[1,1].set_title('Relative Risk')
+
+    plt.tight_layout()
+
+    filename = './mbk/mbk_' + str(b) + '_batch_size_metrics.png'
+    plt.savefig(filename, bbox_inches='tight')
     plt.show()
+
 """
 #---------------------------------------------------------------------------------------------
 
@@ -696,7 +457,6 @@ def calcE(pClusterSet, k):
     for i in range(k):
         clusterTotal = ClusterRRTotal(pClusterSet, i)
         tempE += clusterTotal
-    print(f'Total of relative risks for each cluster: {tempE}')
     return tempE
 
 def calcSSE(pClusterSet):
@@ -713,13 +473,8 @@ def calcSSE(pClusterSet):
     return sse
             
 def GrowCluster(pClusterSet):
-    #print("Beginning GrowCluster(pClusterSet, pClusterC, pUnbalanceFactor)")
-    #print(f'pClusterC: {pClusterC}. pUnbalanceFactor: {pUnbalanceFactor}')
-    #get clusterC data
-    print(pClusterSet.labels_)
     labels = pClusterSet.labels_.copy()
     centers = pClusterSet.cluster_centers_
-    print(len(centers))
 
     ssePerCluster = np.zeros(pClusterSet.n_clusters)
     for i in range(len(XPCA)):
@@ -732,16 +487,15 @@ def GrowCluster(pClusterSet):
     clusterC = np.argmax(ssePerCluster)
     print(f'Cluster {clusterC} chosen')
     indicesC = np.where(labels == clusterC)[0]
-    print(indicesC)
     #print("created list of data points for cluster C")
-    
+
+    """
     #find out how many nodes should be in the new cluster (% of original cluster)
     unbalanceFactor = random.uniform(0.05, 0.95)
     print(f'Unbalance Factor {unbalanceFactor} selected')
     targetSize = int(len(indicesC) * unbalanceFactor)
     print(f'Calculated target size: {targetSize}')
     
-    """
     randomPrimIndex = np.random.choice(indicesC)
     indicesD = [randomPrimIndex]
     indicesC = np.delete(indicesC, np.where(indicesC == randomPrimIndex))
@@ -770,8 +524,6 @@ def GrowCluster(pClusterSet):
     labels[indicesD] = k
 
     pClusterSet.labels_ = labels
-    print(f'Final labels: {pClusterSet.labels_}')
-    #print(f'Inertia: {newKMeans.inertia_}')
     
     return pClusterSet
 
@@ -784,20 +536,13 @@ def MAlgorithm(pClusterSet, k):
     newClusterSet = pClusterSet
     begE = calcE(newClusterSet, k)
     begSSE = calcSSE(newClusterSet)
-    print(begSSE)
 
     splitClusterSet = GrowCluster(newClusterSet)
     print("New cluster grown")
 
-    tempE = calcE(splitClusterSet, k)
-    print(f'E after merging: {tempE}')
-    tempSSE = calcSSE(splitClusterSet)
-    print(f'Merged clusters inertia: {tempSSE}')
-
     clusterA = 0
     clusterB = 0
-    threshold = 0.25    #or 1/k *2?
-    print(f'Threshold set to {threshold}')
+    threshold = 2 * 1/k 
     thresholdMet = False
     while thresholdMet == False:
         clusterA = random.randint(0, splitClusterSet.n_clusters)
@@ -809,11 +554,9 @@ def MAlgorithm(pClusterSet, k):
             print(f'clusters A and B are the same. New cluster B: {clusterB}')
         #calculate sum of their weights
         clusterARR = ClusterRRTotal(splitClusterSet, clusterA)
-        #print(f'Cluster ARR: {clusterARR}')
         clusterBRR = ClusterRRTotal(splitClusterSet, clusterB)
-        #print(f'Cluster BRR: {clusterBRR}')
         probability = (clusterARR + clusterBRR) / begE
-        print(f'probability = {clusterARR} + {clusterBRR} / {begE} = {probability}')
+        #print(f'probability = {clusterARR} + {clusterBRR} / {begE} = {probability}')
         if probability > threshold:
             print("Probability is greater than threshold")
             thresholdMet = True
@@ -833,19 +576,14 @@ def MAlgorithm(pClusterSet, k):
     finalLabel = max(labelMap.values()) + 1
     newLabels[newLabels == -1] = finalLabel
 
-    print(f'newLabels = {newLabels}')
     splitClusterSet.labels_ = newLabels
 
     indices999 = np.where(splitClusterSet.labels_ == finalLabel)[0]
-    print(f'Indices 999: {indices999}')
     newClusterAB = KMeans(n_clusters=1, n_init=10, random_state=0).fit(XPCA[indices999])
     newClusterSet = np.concatenate((splitClusterSet.cluster_centers_, newClusterAB.cluster_centers_), axis=0)
-    mergedClusterSet = KMeans(n_clusters=k-1, n_init=10, random_state=0)
-    mergedClusterSet.cluster_centers_ = splitClusterSet
+    mergedClusterSet = KMeans(n_clusters=k, n_init=10, random_state=0)
+    mergedClusterSet.cluster_centers_ = newClusterSet
     mergedClusterSet.labels_ = newLabels
-
-    print(f'labels_ : {mergedClusterSet.labels_}')
-    print(f'cluster centers: {mergedClusterSet.cluster_centers_}')
     print(f'Clusters {clusterA} and {clusterB} merged.')
 
     
@@ -862,36 +600,29 @@ split it to 2 clusters using k-means.
 
     #calculate weights between data points in each cluster
     Enew = calcE(mergedClusterSet, k)
-    print(f'E after splitting: {Enew}')
     SSEnew = calcSSE(mergedClusterSet)
-    print(f'SSE after splitting: {SSEnew}')
 
-    if (Enew > begE):
-        print(f'New value of E ({Eew}) is greater than current value ({begE}). Update solution')
+    
+    if (SSEnew < begSSE):
+        print(f'Beginning SSE ({begSSE}) is smaller than current value ({SSEnew}). Update solution')
         E = Enew
         clusterSet = mergedClusterSet
-    elif (SSEnew < begSSE):
-        print(f'Beginning SSE ({begSSE}) is smaller than current value ({SSEnew}). Update solution')
+    elif (Enew > begE):
+        print(f'New value of E ({Enew}) is greater than current value ({begE}). Update solution')
         E = Enew
         clusterSet = mergedClusterSet
     else:
         print("New value of E is less than current value. SSE is greater now. Discard solution.")
-
     
-R = 10
-print(f'R set to {R}')
+R = 11 #(run 10 times)
 clusterSet = KMeans(n_clusters=1, n_init=10, random_state=0).fit(XPCA)
 E = 0.0
-print("Cluster set and E variables initialised")
 
-silhouetteScores5 = []
-print("silhouette score list initialised")
-chScores5 = []
-print("calinski harabasz index list initialised")
-dbiScores5 = []
-print("davies-bouldin index list initialised")
-sseScores5 = []
-print("sse score list initialised")
+chScores3 = []
+dbiScores3 = []
+sseScores3 = []
+cciScores3 = []
+rrScores3 = []
 
 for k in K:
     clusterSet = KMeans(n_clusters=k, n_init=10, random_state=0).fit(XPCA)
@@ -902,18 +633,25 @@ for k in K:
         MAlgorithm(clusterSet, k)
         print("M Algorithm successfully performed")
 
-    #silhouette = silhouette_score(XPCA, clusterSet.labels_)
-    #print(f'Silhouette Average: {silhouette}')
-    #silhouetteScores3.append(sihouette)
     chIndex = calinski_harabasz_score(XPCA, clusterSet.labels_)
     print(f'Calinski Harabasz Score: {chIndex}')
-    chScores5.append(chIndex)
+    chScores3.append(chIndex)
     dbiIndex = davies_bouldin_score(XPCA, clusterSet.labels_)
-    dbiScores5.append(dbiIndex)
+    dbiScores3.append(dbiIndex)
     print('Davies-Bouldin Index:', dbiIndex)
     sse = clusterSet.inertia_
     print(f'SSE Score: {sse}')
-    sseScores5.append(sse)
+    sseScores3.append(sse)
+
+    cci = calcCCI(clusterSet.labels_)
+    cciScores3.append(cci)
+    #print(cci)
+
+    rr = 0
+    for cluster in range(k):
+        rr += ClusterRRTotal(clusterSet, cluster)
+    rrScores3.append(rr)
+    print(rr)
     
     labels0 = clusterSet.labels_[mask0]
     labels1 = clusterSet.labels_[mask1]
@@ -923,9 +661,142 @@ for k in K:
 
     plt.xlabel('Primary diagnosis')
     plt.ylabel('Secondary diagnosis')
-    plt.title(str(k) + ' Clusters (M-Algorithm)')
+    plt.title(str(k) + ' Clusters (M Algorithm)')
 
-    filename = './malg/m_algorithm_' + str(k) + '_clusters.png'
-    plt.savefig(filename)
-    plt.show()
+    filename = './malg/malg_' + str(k) + '_clusters.png'
+    plt.savefig(filename, bbox_inches='tight')
+    #plt.show()
+
+fig, ax = plt.subplots(nrows=2, ncols=2, figsize=(10,10))
+
+ax[0,0].plot(K, chScores3)
+ax[0,1].plot(K, dbiScores3)
+ax[1,0].plot(K, sseScores3)
+ax[1,1].plot(K, rrScores3)
+
+ax[0,0].set_xlabel('Number of clusters')
+ax[0,0].set_ylabel('Calinki-Harabasz Index')
+ax[0,0].set_title('Calinski-Harabasz Scores')
+ax[0,1].set_xlabel('Number of clusters')
+ax[0,1].set_ylabel('Davies-Bouldin Index')
+ax[0,1].set_title('Davies-Bouldin Scores')
+ax[1,0].set_xlabel('Number of clusters')
+ax[1,0].set_ylabel('Sum of Squared Error Score')
+ax[1,0].set_title('SSE Scores')
+ax[1,1].set_xlabel('Number of clusters')
+ax[1,1].set_ylabel('Relative Risk Score')
+ax[1,1].set_title('Relative Risk')
+
+plt.tight_layout()
+
+filename = './malg/malg_clusters_metrics.png'
+plt.savefig(filename, bbox_inches='tight')
     
+#plt.show()
+
+#---------------------------------------------------------------------------------------------
+"""
+#CLARA
+
+chScores4 = []
+dbiScores4 = []
+sseScores4 = []
+cciScores4 = []
+rrScores4 = []
+
+maxNeighbours = [2,5,8,10,12]
+numLocal = [3,4,5]
+
+for n in maxNeighbours:
+    chScoresTemp = []
+    dbiScoresTemp = []
+    sseScoresTemp = []
+    cciScoresTemp = []
+    rrScoresTemp = []    
+    for k in K:
+        print(f'k = {k}. maxNeighbours = {n}')
+
+        # perform clustering
+        clara = clarans(XPCA, k, n, 3)
+        print("CLARA created")
+        clara.process()
+        print("CLARA processed")
+        clusters = clara.get_clusters()
+        medoids = clara.get_medoids()
+
+        #calinski-harabasz index (also known as the Variance Ratio Criterion)
+        #aiming for a higher value
+        chIndex = calinski_harabasz_score(XPCA, clusters)
+        chScoresTemp.append(chIndex)
+        chScores4.append(chIndex)
+        print('Calinski-Harabasz Index:', chIndex)
+        print(chScoresTemp)
+
+        #davies-bouldin index 
+        #aiming for a lower value
+        dbiIndex = davies_bouldin_score(XPCA, clusters)
+        dbiScoresTemp.append(dbiIndex)
+        dbiScores4.append(dbiIndex)
+        print('Davies-Bouldin Index:', dbiIndex)
+
+        #sse
+        #aiming for a lower value
+        #The inertia_ attribute returns the sum of squared distances of all data points to their closest centroid
+        distances = cdist(XPCA, medoids, 'euclidean')
+        sse = np.min(distances, axis=1).sum()
+        sseScoresTemp.append(sse)
+        sseScores4.append(sse)
+        print('SSE:', sse)
+
+        cci = calcCCI(clusters)
+        cciScores4.append(cci)
+        #print(cci)
+
+        rr = 0
+        for cluster in range(k):
+            rr += ClusterRRTotal(clara, cluster)
+        rrScores4.append(rr)
+        print(rr)
+
+        labels0 = clusters[mask0]
+        labels1 = clusters[mask1]
+
+        plt.scatter(X0[:, 0], X0[:, 1], c=labels0, marker='o', s=10, cmap=cmap)
+        plt.scatter(X1[:, 0], X1[:, 1], c=labels1, marker='x', s=10, cmap=cmap)
+
+        plt.xlabel('Primary diagnosis')
+        plt.ylabel('Secondary diagnosis')
+        plt.title(str(k) + ' Clusters (CLARA, maxNeighbor=' + str(n) + ')')
+        
+        filename = './clara/clara_' + str(k) + '_clusters_' + str(n) + 'maxneighbor.png'
+        plt.savefig(filename, bbox_inches='tight')
+        #plt.show()
+        
+
+    fig, ax = plt.subplots(nrows=2, ncols=2, figsize=(10,10))
+
+    ax[0,0].plot(K, chScoresTemp)
+    ax[0,1].plot(K, dbiScoresTemp)
+    ax[1,0].plot(K, sseScoresTemp)
+    ax[1,1].plot(K, rrScoresTemp)
+
+    ax[0,0].set_xlabel('Batch Size')
+    ax[0,0].set_ylabel('Calinki-Harabasz Index')
+    ax[0,0].set_title('Calinski-Harabasz Scores')
+    ax[0,1].set_xlabel('Batch Size')
+    ax[0,1].set_ylabel('Davies-Bouldin Index')
+    ax[0,1].set_title('Davies-Bouldin Scores')
+    ax[1,0].set_xlabel('Batch Size')
+    ax[1,0].set_ylabel('Sum of Squared Error Score')
+    ax[1,0].set_title('SSE Scores')
+    ax[1,1].set_xlabel('Batch Size')
+    ax[1,1].set_ylabel('Relative Risk Score')
+    ax[1,1].set_title('Relative Risk')
+
+    plt.tight_layout()
+
+    filename = './clara/clara_' + str(n) + '_max_neighbours_metrics.png'
+    plt.savefig(filename, bbox_inches='tight')
+    #plt.show()
+
+"""
