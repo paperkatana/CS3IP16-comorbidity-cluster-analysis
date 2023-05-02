@@ -71,7 +71,7 @@ outputData.insert(len(outputData.columns), 'EXPIRE_FLAG', expireFlag)
 
 outputData.to_csv('./data/ADMISSIONS_PRIMARY_SECONDARY.csv')
 
-#split the seconday diagnoses string, and duplicate the row n times for n diagnoses
+#split the secondary diagnoses string, and duplicate the row n times for n diagnoses
 #resulting in all primary-secondary diagnosis pairs in the data
 diag = outputData.set_index(['SUBJECT_ID', 'HADM_ID', 'PRIMARY_DIAGNOSIS', 'EXPIRE_FLAG'])['SECONDARY_DIAGNOSES']\
             .str.split(',', expand=True)\
@@ -179,39 +179,6 @@ def ClusterRRTotal(pClusterSet, pClusterIndex):
         clusterTotal += relativeRisk
     return clusterTotal
 
-#---------------------------------------------------------------------------------------------
-
-#saving the clusters
-
-#optimal value of k selected is 80
-finalKMeans = KMeans(n_clusters=80, n_init=10, random_state=0).fit(XPCA)
-clusteredLabels = finalKMeans.labels_
-
-clusteredData = diagData.copy()
-
-#assign cluster label to each diagnosis pair
-clusteredData['CLUSTER'] = clusteredLabels
-print(clusteredData.head())
-
-#create a DataFrame for the codes in each cluster
-clusteredCodeData = clusteredData.drop(columns={'SUBJECT_ID', 'HADM_ID', 'EXPIRE_FLAG'})
-clusteredCodeData = clusteredData.groupby('CLUSTER').agg({
-    'PRIMARY_DIAGNOSIS': lambda x: ','.join(x.astype(str)),
-    'SECONDARY_DIAGNOSIS': lambda x: ','.join(x.astype(str))
-})
-#remove duplicate codes from each string
-clusteredCodeData['PRIMARY_DIAGNOSIS'] = clusteredCodeData['PRIMARY_DIAGNOSIS'].apply(lambda x: ','.join(sorted(list(set([s.strip() for s in x.split(',')])), key=str)))
-clusteredCodeData['SECONDARY_DIAGNOSIS'] = clusteredCodeData['SECONDARY_DIAGNOSIS'].apply(lambda x: ','.join(sorted(list(set([s.strip() for s in x.split(',')])), key=str)))
-
-clusteredCodeData.to_csv('./data/CLUSTERED_CODES_DATA.csv')
-
-#create a DataFrame showing which clusters each admission belongs to
-clusteredAdmData = clusteredData.merge(outputData, on=['SUBJECT_ID', 'HADM_ID', 'PRIMARY_DIAGNOSIS', 'EXPIRE_FLAG'])
-clusteredAdmData.drop(columns={'SECONDARY_DIAGNOSIS'}, inplace=True)
-clusteredAdmData = clusteredAdmData.groupby(['SUBJECT_ID', 'HADM_ID', 'PRIMARY_DIAGNOSIS', 'EXPIRE_FLAG', 'SECONDARY_DIAGNOSES'])['CLUSTER'].apply(lambda x: ','.join(x.astype(str))).reset_index()
-clusteredAdmData.drop_duplicates(inplace=True)
-
-clusteredAdmData.to_csv('./data/CLUSTERED_ADMISSION_DATA.csv')
 
 #---------------------------------------------------------------------------------------------
 
@@ -594,7 +561,39 @@ plt.savefig(filename, bbox_inches='tight')
     
 plt.show()
 
+#---------------------------------------------------------------------------------------------
 
+#saving the clusters
+
+#optimal value of k selected is 80
+finalKMeans = KMeans(n_clusters=80, n_init=10, random_state=0).fit(XPCA)
+clusteredLabels = finalKMeans.labels_
+
+clusteredData = diagData.copy()
+
+#assign cluster label to each diagnosis pair
+clusteredData['CLUSTER'] = clusteredLabels
+print(clusteredData.head())
+
+#create a DataFrame for the codes in each cluster
+clusteredCodeData = clusteredData.drop(columns={'SUBJECT_ID', 'HADM_ID', 'EXPIRE_FLAG'})
+clusteredCodeData = clusteredData.groupby('CLUSTER').agg({
+    'PRIMARY_DIAGNOSIS': lambda x: ','.join(x.astype(str)),
+    'SECONDARY_DIAGNOSIS': lambda x: ','.join(x.astype(str))
+})
+#remove duplicate codes from each string
+clusteredCodeData['PRIMARY_DIAGNOSIS'] = clusteredCodeData['PRIMARY_DIAGNOSIS'].apply(lambda x: ','.join(sorted(list(set([s.strip() for s in x.split(',')])), key=str)))
+clusteredCodeData['SECONDARY_DIAGNOSIS'] = clusteredCodeData['SECONDARY_DIAGNOSIS'].apply(lambda x: ','.join(sorted(list(set([s.strip() for s in x.split(',')])), key=str)))
+
+clusteredCodeData.to_csv('./data/CLUSTERED_CODES_DATA.csv')
+
+#create a DataFrame showing which clusters each admission belongs to
+clusteredAdmData = clusteredData.merge(outputData, on=['SUBJECT_ID', 'HADM_ID', 'PRIMARY_DIAGNOSIS', 'EXPIRE_FLAG'])
+clusteredAdmData.drop(columns={'SECONDARY_DIAGNOSIS'}, inplace=True)
+clusteredAdmData = clusteredAdmData.groupby(['SUBJECT_ID', 'HADM_ID', 'PRIMARY_DIAGNOSIS', 'EXPIRE_FLAG', 'SECONDARY_DIAGNOSES'])['CLUSTER'].apply(lambda x: ','.join(x.astype(str))).reset_index()
+clusteredAdmData.drop_duplicates(inplace=True)
+
+clusteredAdmData.to_csv('./data/CLUSTERED_ADMISSION_DATA.csv')
 
 
 
